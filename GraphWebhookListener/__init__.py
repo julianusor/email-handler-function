@@ -20,8 +20,22 @@ def get_graph_token():
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Webhook recibido")
-    body = req.get_json()
 
+    # --- 1) VALIDACIÓN DE SUSCRIPCIÓN ---------------------------------
+    if req.method == "GET" and "validationToken" in req.params:
+        # devolver el token tal cual, texto plano y 200 OK
+        return func.HttpResponse(
+            req.params["validationToken"],
+            status_code=200,
+            mimetype="text/plain"
+        )
+
+    # a partir de aquí, todo lo demás son POST con notificaciones --------
+    try:
+        body = req.get_json()
+    except ValueError:
+        return func.HttpResponse("Bad request", status_code=400)
+    
     # 1) Validación inicial de Graph (cuando crea el subscription)
     if "validationToken" in body:
         return func.HttpResponse(body["validationToken"], status_code=200)
@@ -53,13 +67,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # 5) Llamar a OpenAI para estructurar
         openai = OpenAI(api_key=OPENAI_API_KEY)
         prompt = f"""
-Eres un parser de emails. Devuelve un JSON con:
-  nombre, cedula, texto_original, adjuntos (lista de textos OCR).
-Email completo:
-\"\"\"{mail['body']['content']}\"\"\"
-Adjuntos OCR:
-\"\"\"{json.dumps(adj_texts)}\"\"\"
-"""
+            Eres un parser de emails. Devuelve un JSON con:
+            nombre, cedula, texto_original, adjuntos (lista de textos OCR).
+            Email completo:
+            \"\"\"{mail['body']['content']}\"\"\"
+            Adjuntos OCR:
+            \"\"\"{json.dumps(adj_texts)}\"\"\"
+            """
         completion = openai.chat.completions.create(
             model="gpt-4o-mini", temperature=0,
             messages=[{"role":"user","content":prompt}]

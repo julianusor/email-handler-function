@@ -8,7 +8,7 @@ load_dotenv()
 TENANT_ID     = os.getenv("TENANT_ID")
 CLIENT_ID     = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-FUNC_URL      = "https://new-email-handler-function.azurewebsites.net/api/"
+FUNC_URL      = "https://new-email-handler-function.azurewebsites.net/api/GraphWebhookListener"
 USER_EMAIL    = "julianusu@outlook.com"
 
 # 2) Obtener token
