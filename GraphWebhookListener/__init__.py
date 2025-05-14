@@ -11,9 +11,9 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# TARGET_USER_ID: Debe ser el User Principal Name (UPN) del usuario (ej. "usuario@dominio.com")
-# o el Object ID (GUID) del usuario en Azure AD (ej. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").
-TARGET_USER_ID_FROM_ENV = "julianusu@outlook.com"
+# TARGET_USER_ID for the Azure Function runtime, configured in App Settings.
+# This is the user whose mailbox the function will process upon receiving notifications.
+AZURE_FUNCTION_TARGET_USER_ID = "julianusu@outlook.com"
 
 def get_graph_token():
     app = ConfidentialClientApplication(
@@ -27,14 +27,17 @@ def ocr_from_bytes(content_bytes):
     logging.warning("OCR functionality is not implemented. Returning placeholder text.")
     return "OCR placeholder text for attachment"
 
-def create_graph_subscription():
+def create_graph_subscription(subscription_target_user_id: str, subscription_notification_url: str):
     """
     Crea o renueva una suscripción a notificaciones de Microsoft Graph para nuevos correos.
     IMPORTANTE: Esta función debe ejecutarse para iniciar el flujo de notificaciones.
     """
 
-    if not TARGET_USER_ID_FROM_ENV:
-        logging.error("La variable de entorno TARGET_USER_ID no está configurada.")
+    if not subscription_target_user_id:
+        logging.error("El parámetro subscription_target_user_id no puede estar vacío.")
+        return None
+    if not subscription_notification_url:
+        logging.error("El parámetro subscription_notification_url no puede estar vacío.")
         return None
 
     token = get_graph_token()
@@ -47,7 +50,6 @@ def create_graph_subscription():
         "Content-Type": "application/json"
     }
 
-    notification_url = "https://new-email-handler-function.azurewebsites.net/api/GraphWebhookListener"
     try:
         expiration_datetime_obj = datetime.now(timezone.utc) + timedelta(days=2, hours=23)
         expiration_datetime_str = expiration_datetime_obj.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
@@ -57,13 +59,13 @@ def create_graph_subscription():
 
     subscription_payload = {
         "changeType": "created",
-        "notificationUrl": notification_url,
-        "resource": f"/users/{TARGET_USER_ID_FROM_ENV}/mailFolders('Inbox')/messages",
+        "notificationUrl": subscription_notification_url,
+        "resource": f"/users/{subscription_target_user_id}/mailFolders('Inbox')/messages",
         "expirationDateTime": expiration_datetime_str,
         "clientState": "secret-webhook-state-string-autechre"
     }
 
-    logging.info(f"Intentando crear/renovar suscripción para {TARGET_USER_ID_FROM_ENV} con URL de notificación: {notification_url}")
+    logging.info(f"Intentando crear/renovar suscripción para {subscription_target_user_id} con URL de notificación: {subscription_notification_url}")
 
     try:
         response = requests.post(
@@ -117,8 +119,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         if isinstance(body, dict) and "value" in body and isinstance(body["value"], list):
             logging.info("Processing notification(s).")
-            if not TARGET_USER_ID_FROM_ENV:
-                logging.error("TARGET_USER_ID no está configurado en las variables de entorno. No se pueden procesar las notificaciones.")
+            if not AZURE_FUNCTION_TARGET_USER_ID:
+                logging.error("TARGET_USER_ID no está configurado en las variables de entorno de la Azure Function. No se pueden procesar las notificaciones.")
                 return func.HttpResponse(status_code=202)
 
             for notification in body["value"]:
@@ -129,7 +131,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     logging.warning(f"Could not extract message_id from notification: {json.dumps(notification)}")
                     continue
 
-                logging.info(f"Processing message ID: {message_id} for target user: {TARGET_USER_ID_FROM_ENV}")
+                logging.info(f"Processing message ID: {message_id} for target user: {AZURE_FUNCTION_TARGET_USER_ID}")
 
                 token = get_graph_token()
                 if not token:
@@ -138,14 +140,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 
                 headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 
-                mail_url = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID_FROM_ENV}/messages/{message_id}"
+                mail_url = f"https://graph.microsoft.com/v1.0/users/{AZURE_FUNCTION_TARGET_USER_ID}/messages/{message_id}"
                 mail_response = requests.get(mail_url, headers=headers)
                 
                 try:
                     mail_response.raise_for_status()
                     mail = mail_response.json()
                 except requests.exceptions.HTTPError as e:
-                    logging.error(f"Error fetching email {message_id} for user {TARGET_USER_ID_FROM_ENV}: {e}. Response: {mail_response.text}")
+                    logging.error(f"Error fetching email {message_id} for user {AZURE_FUNCTION_TARGET_USER_ID}: {e}. Response: {mail_response.text}")
                     continue
                 except json.JSONDecodeError:
                     logging.error(f"Error decoding JSON for email {message_id}. Response: {mail_response.text}")
@@ -153,7 +155,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
                 adj_texts = []
                 if mail.get("hasAttachments"):
-                    attachments_url = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID_FROM_ENV}/messages/{message_id}/attachments"
+                    attachments_url = f"https://graph.microsoft.com/v1.0/users/{AZURE_FUNCTION_TARGET_USER_ID}/messages/{message_id}/attachments"
                     attachments_response = requests.get(attachments_url, headers=headers)
                     
                     if attachments_response.status_code == 200:
@@ -248,7 +250,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 
                 body_insert = {"values": [excel_row]}
                 
-                excel_path = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID_FROM_ENV}/drive/root:/datos/emails.xlsx:/workbook/tables/Table1/rows/add"
+                excel_path = f"https://graph.microsoft.com/v1.0/users/{AZURE_FUNCTION_TARGET_USER_ID}/drive/root:/datos/emails.xlsx:/workbook/tables/Table1/rows/add"
                 
                 insert_response = requests.post(excel_path, headers=headers, json=body_insert)
                 if insert_response.status_code >= 300:
