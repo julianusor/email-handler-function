@@ -1,4 +1,4 @@
-import logging, json, os
+import logging, json, os, base64
 import azure.functions as func
 from msal import ConfidentialClientApplication
 import requests
@@ -10,8 +10,8 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-FUNCTION_APP_NAME ="new-email-handler-function" # Ej: "myemailhandlerfunction"
-TARGET_USER_ID = "julianusu@outlook.com" # Ej: "usuario@tudominio.com" o el ID de usuario
+FUNCTION_APP_NAME = "new-email-handler-function"  # Ej: "myemailhandlerfunction"
+TARGET_USER_ID = "julianusu@outlook.com"  # Ej: "usuario@tudominio.com" o el ID de usuario
 
 def get_graph_token():
     app = ConfidentialClientApplication(
@@ -21,7 +21,6 @@ def get_graph_token():
     result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
     return result["access_token"]
 
-# Placeholder for OCR function to avoid NameError during notification processing
 def ocr_from_bytes(content_bytes):
     logging.warning("OCR functionality is not implemented. Returning placeholder text.")
     # In a real scenario, this would involve sending bytes to an OCR service.
@@ -50,22 +49,15 @@ def create_graph_subscription():
         "Content-Type": "application/json"
     }
 
-    # Asegúrate de que la URL de notificación sea la correcta para tu Azure Function
-    # El nombre del listener es 'GraphWebhookListener' según tu estructura de carpetas.
     notification_url = f"https://{FUNCTION_APP_NAME}.azurewebsites.net/api/GraphWebhookListener"
-
-    # La fecha de expiración debe estar en formato ISO 8601 y en el futuro.
-    # Graph permite un máximo de 3 días para algunas suscripciones si no se renuevan.
-    # Para este ejemplo, usamos la fecha que proporcionaste.
-    # Considera hacerla dinámica, ej: datetime.utcnow() + timedelta(days=2, hours=23)
-    expiration_datetime = "2025-06-20T11:00:00.000Z" # Ajusta según sea necesario
+    expiration_datetime = "2025-06-20T11:00:00.000Z"  # Ajusta según sea necesario
 
     subscription_payload = {
         "changeType": "created",
         "notificationUrl": notification_url,
         "resource": f"/users/{TARGET_USER_ID}/mailFolders('Inbox')/messages",
         "expirationDateTime": expiration_datetime,
-        "clientState": "secret-webhook-state-string" # Puedes cambiar esto
+        "clientState": "secret-webhook-state-string"
     }
 
     try:
@@ -74,7 +66,7 @@ def create_graph_subscription():
             headers=headers,
             json=subscription_payload
         )
-        response.raise_for_status()  # Lanza una excepción para códigos de error HTTP (4xx o 5xx)
+        response.raise_for_status()
         subscription_details = response.json()
         logging.info(f"Suscripción creada exitosamente: {subscription_details.get('id')}")
         return subscription_details
@@ -86,111 +78,152 @@ def create_graph_subscription():
     except json.JSONDecodeError:
         logging.error(f"Error al decodificar la respuesta JSON de la creación de suscripción. Respuesta: {response.text}")
         return None
-    
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Webhook received")
 
-    # --- VALIDACIÓN DE SUSCRIPCIÓN (GET) ---
-    # Microsoft Graph typically uses POST for validation, but GET can be supported.
-    if req.method == "GET" and "validationToken" in req.params:
-        validation_token = req.params["validationToken"]
-        logging.info(f"GET validation request received. Token: {validation_token}")
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info(f"Webhook received a {req.method} request.")
+
+    validation_token_from_param = req.params.get("validationToken")
+    if validation_token_from_param:
+        logging.info(f"Validation token found in query parameter: {validation_token_from_param}")
         return func.HttpResponse(
-            validation_token,
+            validation_token_from_param,
             status_code=200,
             mimetype="text/plain"
         )
 
-    # --- Handle POST requests (Graph validation or notifications) ---
     if req.method == "POST":
+        req_body_bytes = None
         try:
-            body = req.get_json()
-        except ValueError:
-            logging.error("Failed to parse JSON body or request is not JSON.")
-            return func.HttpResponse("Request body must be valid JSON.", status_code=400)
+            req_body_bytes = req.get_body()
+        except Exception as e:
+            logging.error(f"Could not read request body: {e}")
+            return func.HttpResponse("Error reading request body.", status_code=400)
 
-        # --- VALIDACIÓN DE SUSCRIPCIÓN (POST) ---
-        # This is the primary validation mechanism for Graph API subscriptions.
-        if isinstance(body, dict) and "validationToken" in body:
-            validation_token = body["validationToken"]
-            logging.info(f"POST validation token received: {validation_token}")
-            return func.HttpResponse(
-                validation_token,
-                status_code=200,
-                mimetype="text/plain"  # Graph expects the token back as plain text.
-            )
+        body = None
+        if req_body_bytes:
+            try:
+                body = json.loads(req_body_bytes.decode('utf-8'))
+            except json.JSONDecodeError:
+                logging.warning("POST request body is not valid JSON. Raw body (first 200 chars): %s", req_body_bytes[:200])
+                return func.HttpResponse("Request body must be valid JSON for notifications or JSON-based validation.", status_code=400)
+        else:
+            logging.info("POST request with empty body.")
+            return func.HttpResponse("POST request with empty body and no validationToken in query param.", status_code=400)
 
-        # --- PROCESAR NOTIFICACIONES ---
-        # If it's a POST request and not a validation request, then it's a notification.
-        logging.info("Processing notification(s).")
-        for notification in body.get("value", []):
-            message_id = notification.get("resourceData", {}).get("id")
-            sender_email_info = notification.get("resourceData", {}).get("from", {}).get("emailAddress", {})
-            user_id = sender_email_info.get("address")
+        if isinstance(body, dict):
+            if "validationToken" in body:
+                validation_token_from_body = body["validationToken"]
+                logging.info(f"POST validation token received from simple JSON body: {validation_token_from_body}")
+                return func.HttpResponse(
+                    validation_token_from_body,
+                    status_code=200,
+                    mimetype="text/plain"
+                )
+            elif "value" in body and isinstance(body["value"], list):
+                for item in body["value"]:
+                    if isinstance(item, dict) and "validationTokens" in item and \
+                       isinstance(item["validationTokens"], list) and len(item["validationTokens"]) > 0:
+                        validation_token_from_complex_body = item["validationTokens"][0]
+                        logging.info(f"POST validation token received from complex JSON body: {validation_token_from_complex_body}")
+                        return func.HttpResponse(
+                            validation_token_from_complex_body,
+                            status_code=200,
+                            mimetype="text/plain"
+                        )
 
-            if not message_id or not user_id:
-                logging.warning(f"Could not extract message_id or user_id from notification: {notification}")
-                continue
+        if isinstance(body, dict) and "value" in body and isinstance(body["value"], list):
+            logging.info("Processing notification(s).")
+            for notification in body["value"]:
+                resource_data = notification.get("resourceData", {})
+                message_id = resource_data.get("id")
 
-            logging.info(f"Processing message ID: {message_id} for user (sender): {user_id}")
+                if not message_id:
+                    logging.warning(f"Could not extract message_id from notification: {notification}")
+                    continue
 
-            # 3) Traer el correo completo
-            token = get_graph_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            mail = requests.get(
-                f"https://graph.microsoft.com/v1.0/users/{user_id}/messages/{message_id}",
-                headers=headers
-            ).json()
+                logging.info(f"Processing message ID: {message_id} for target user: {TARGET_USER_ID}")
 
-            # 4) Descargar adjuntos y OCR (si corresponde)
-            adj_texts = []
-            if mail.get("hasAttachments"):
-                attachments_url = mail.get("@odata.id", "") + "/attachments"
-                if not mail.get("@odata.id"):
-                    logging.error(f"Missing '@odata.id' in mail object for message {message_id}")
-                else:
+                token = get_graph_token()
+                if not token:
+                    logging.error("Failed to get Graph token for processing notification.")
+                    continue
+                
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                
+                mail_url = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID}/messages/{message_id}"
+                mail_response = requests.get(mail_url, headers=headers)
+                
+                try:
+                    mail_response.raise_for_status()
+                    mail = mail_response.json()
+                except requests.exceptions.HTTPError as e:
+                    logging.error(f"Error fetching email {message_id} for user {TARGET_USER_ID}: {e}. Response: {mail_response.text}")
+                    continue
+                except json.JSONDecodeError:
+                    logging.error(f"Error decoding JSON for email {message_id}. Response: {mail_response.text}")
+                    continue
+
+                adj_texts = []
+                if mail.get("hasAttachments"):
+                    attachments_url = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID}/messages/{message_id}/attachments"
                     attachments_response = requests.get(attachments_url, headers=headers)
+                    
                     if attachments_response.status_code == 200:
                         attachments = attachments_response.json().get("value", [])
                         for att in attachments:
-                            if "contentBytes" in att and att["contentBytes"] is not None:
-                                text = ocr_from_bytes(att["contentBytes"])
-                                adj_texts.append(text)
+                            if att.get("contentBytes"): 
+                                try:
+                                    decoded_bytes = base64.b64decode(att["contentBytes"])
+                                    text = ocr_from_bytes(decoded_bytes)
+                                    adj_texts.append(text)
+                                except base64.binascii.Error as b64e:
+                                    logging.error(f"Base64 decoding failed for attachment '{att.get('name', 'N/A')}': {b64e}")
+                                except Exception as e:
+                                    logging.error(f"OCR processing failed for attachment '{att.get('name', 'N/A')}': {e}")
                             else:
-                                logging.warning(f"Attachment '{att.get('name', 'N/A')}' for message {message_id} has no contentBytes.")
+                                logging.warning(f"Attachment '{att.get('name', 'N/A')}' for message {message_id} has no contentBytes or it's null.")
                     else:
                         logging.error(f"Failed to get attachments for message {message_id}. Status: {attachments_response.status_code}, Response: {attachments_response.text}")
 
-            # 5) Llamar a OpenAI para estructurar
-            openai = OpenAI(api_key=OPENAI_API_KEY)
-            prompt = f"""
-                Eres un parser de emails. Devuelve un JSON con:
-                nombre, cedula, texto_original, adjuntos (lista de textos OCR).
-                Email completo:
-                \"\"\"{mail['body']['content']}\"\"\" 
-                Adjuntos OCR:
-                \"\"\"{json.dumps(adj_texts)}\"\"\" 
-                """
-            completion = openai.chat.completions.create(
-                model="gpt-4o-mini", temperature=0,
-                messages=[{"role":"user","content":prompt}]
-            )
-            data = json.loads(completion.choices[0].message.content)
+                openai = OpenAI(api_key=OPENAI_API_KEY)
+                email_body_content = mail.get("body", {}).get("content", "")
+                prompt = f"""
+                    Eres un parser de emails. Devuelve un JSON con:
+                    nombre, cedula, texto_original, adjuntos (lista de textos OCR).
+                    Email completo:
+                    \"\"\"{email_body_content}\"\"\" 
+                    Adjuntos OCR:
+                    \"\"\"{json.dumps(adj_texts)}\"\"\" 
+                    """
+                try:
+                    completion = openai.chat.completions.create(
+                        model="gpt-4o-mini", temperature=0,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    data_str = completion.choices[0].message.content
+                    data = json.loads(data_str)
+                except (json.JSONDecodeError, IndexError, AttributeError, TypeError) as e:
+                    logging.error(f"Failed to get or parse OpenAI response: {e}")
+                    if 'completion' in locals() and hasattr(completion, 'choices') and completion.choices:
+                        logging.error(f"OpenAI raw response content: {completion.choices[0].message.content}")
+                    continue
 
-            # 6) Insertar fila en Excel (OneDrive/Graph API)
-            excel_row = [
-                data["nombre"], data["cedula"],
-                data["texto_original"], ", ".join(data["adjuntos"])
-            ]
-            body_insert = {"values": [excel_row]}
-            requests.post(
-                "https://graph.microsoft.com/v1.0/me/drive/root:/datos/emails.xlsx:/"
-                "workbook/tables/Table1/rows/add",
-                headers=headers, json=body_insert
-            )
+                excel_row = [
+                    data.get("nombre"), data.get("cedula"),
+                    data.get("texto_original"), ", ".join(data.get("adjuntos", []))
+                ]
+                body_insert = {"values": [excel_row]}
+                
+                excel_path = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID}/drive/root:/datos/emails.xlsx:/workbook/tables/Table1/rows/add"
+                
+                insert_response = requests.post(excel_path, headers=headers, json=body_insert)
+                if insert_response.status_code >= 300:
+                    logging.error(f"Error inserting row into Excel: {insert_response.status_code}. Response: {insert_response.text}")
 
-        return func.HttpResponse(status_code=202)
+            return func.HttpResponse(status_code=202)
+        else:
+            logging.warning(f"POST request with unhandled JSON body structure: {body}")
+            return func.HttpResponse("Bad Request: Unhandled JSON structure.", status_code=400)
 
-    # If not GET (with validationToken) or POST, method is not allowed.
-    logging.warning(f"Unhandled request method: {req.method}")
+    logging.warning(f"Unhandled request method: {req.method}. Only GET with validationToken or POST is allowed.")
     return func.HttpResponse("Method not allowed.", status_code=405)
