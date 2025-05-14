@@ -11,7 +11,9 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-TARGET_USER_ID_FROM_ENV = os.getenv("TARGET_USER_ID")
+# TARGET_USER_ID: Debe ser el User Principal Name (UPN) del usuario (ej. "usuario@dominio.com")
+# o el Object ID (GUID) del usuario en Azure AD (ej. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").
+TARGET_USER_ID_FROM_ENV = "julianusu@outlook.com"
 
 def get_graph_token():
     app = ConfidentialClientApplication(
