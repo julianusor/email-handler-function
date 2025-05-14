@@ -185,33 +185,76 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     else:
                         logging.error(f"Failed to get attachments for message {message_id}. Status: {attachments_response.status_code}, Response: {attachments_response.text}")
 
-                openai = OpenAI(api_key=OPENAI_API_KEY)
-                email_body_content = mail.get("body", {}).get("content", "")
-                prompt = f"""
-                    Eres un parser de emails. Devuelve un JSON con:
-                    nombre, cedula, texto_original, adjuntos (lista de textos OCR).
-                    Email completo:
-                    \"\"\"{email_body_content}\"\"\" 
-                    Adjuntos OCR:
-                    \"\"\"{json.dumps(adj_texts)}\"\"\" 
-                    """
-                try:
-                    completion = openai.chat.completions.create(
-                        model="gpt-4o-mini", temperature=0,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    data_str = completion.choices[0].message.content
-                    data = json.loads(data_str)
-                except (json.JSONDecodeError, IndexError, AttributeError, TypeError) as e:
-                    logging.error(f"Failed to get or parse OpenAI response: {e}")
-                    if 'completion' in locals() and hasattr(completion, 'choices') and completion.choices:
-                        logging.error(f"OpenAI raw response content: {completion.choices[0].message.content}")
+                if not OPENAI_API_KEY:
+                    logging.error("OPENAI_API_KEY environment variable is not set. Skipping OpenAI processing.")
                     continue
 
+                openai = OpenAI(api_key=OPENAI_API_KEY)
+                email_body_content = mail.get("body", {}).get("content", "")
+                
+                prompt = f"""
+                    Eres un parser de emails. Tu tarea es extraer información específica del siguiente correo electrónico y sus adjuntos.
+                    Debes devolver la información en formato JSON. El JSON debe contener estrictamente las siguientes claves:
+                    - "nombre": El nombre de la persona mencionada en el correo. Si no se encuentra, usa null o una cadena vacía.
+                    - "cedula": El número de cédula o identificación. Si no se encuentra, usa null o una cadena vacía.
+                    - "texto_original": El cuerpo principal del correo electrónico tal como se recibió.
+                    - "adjuntos": Una lista de strings, donde cada string es el texto extraído (OCR) de un adjunto. Si no hay adjuntos o no se pudo extraer texto, usa una lista vacía [].
+
+                    Email completo:
+                    \"\"\"{email_body_content}\"\"\" 
+                    Textos de adjuntos (OCR):
+                    \"\"\"{json.dumps(adj_texts)}\"\"\" 
+                    """
+                
+                data = None
+                try:
+                    completion = openai.chat.completions.create(
+                        model="gpt-4o-mini", 
+                        temperature=0,
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    if completion.choices and completion.choices[0].message and completion.choices[0].message.content:
+                        data_str = completion.choices[0].message.content
+                        logging.info(f"OpenAI raw response string: {data_str}")
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError as jde:
+                            logging.error(f"Failed to parse JSON from OpenAI response: {jde}. Raw response: {data_str}")
+                            continue 
+                    else:
+                        logging.error("OpenAI response is empty or not in the expected format.")
+                        if completion:
+                            logging.error(f"OpenAI full completion object for debugging: {completion}")
+                        continue
+
+                except Exception as e: 
+                    logging.error(f"Error calling OpenAI API: {e}")
+                    if hasattr(e, 'response') and e.response:
+                         logging.error(f"OpenAI API error details: {e.response.text}")
+                    continue 
+                
+                if not data: 
+                    logging.error("Failed to obtain structured data from OpenAI. Skipping Excel insertion for this email.")
+                    continue
+
+                nombre = data.get("nombre", "")
+                cedula = data.get("cedula", "")
+                texto_original_from_ai = data.get("texto_original", email_body_content)
+                
+                adjuntos_from_ai = data.get("adjuntos", [])
+                if not isinstance(adjuntos_from_ai, list) or not all(isinstance(item, str) for item in adjuntos_from_ai):
+                    logging.warning(f"OpenAI 'adjuntos' field was not a list of strings: {adjuntos_from_ai}. Using empty list instead.")
+                    adjuntos_from_ai = []
+
                 excel_row = [
-                    data.get("nombre"), data.get("cedula"),
-                    data.get("texto_original"), ", ".join(data.get("adjuntos", []))
+                    nombre, 
+                    cedula,
+                    texto_original_from_ai,
+                    ", ".join(adjuntos_from_ai)
                 ]
+                
                 body_insert = {"values": [excel_row]}
                 
                 excel_path = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_ID}/drive/root:/datos/emails.xlsx:/workbook/tables/Table1/rows/add"
