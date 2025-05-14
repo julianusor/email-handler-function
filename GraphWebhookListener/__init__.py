@@ -11,7 +11,6 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-APP_NAME_FROM_ENV = os.getenv("WEBSITE_SITE_NAME") or os.getenv("FUNCTION_APP_NAME")
 TARGET_USER_ID_FROM_ENV = os.getenv("TARGET_USER_ID")
 
 def get_graph_token():
@@ -31,9 +30,7 @@ def create_graph_subscription():
     Crea o renueva una suscripción a notificaciones de Microsoft Graph para nuevos correos.
     IMPORTANTE: Esta función debe ejecutarse para iniciar el flujo de notificaciones.
     """
-    if not APP_NAME_FROM_ENV:
-        logging.error("La variable de entorno WEBSITE_SITE_NAME o FUNCTION_APP_NAME no está configurada.")
-        return None
+
     if not TARGET_USER_ID_FROM_ENV:
         logging.error("La variable de entorno TARGET_USER_ID no está configurada.")
         return None
@@ -48,7 +45,7 @@ def create_graph_subscription():
         "Content-Type": "application/json"
     }
 
-    notification_url = f"https://{APP_NAME_FROM_ENV}.azurewebsites.net/api/GraphWebhookListener"
+    notification_url = "https://new-email-handler-function.azurewebsites.net/api/GraphWebhookListener"
     try:
         expiration_datetime_obj = datetime.now(timezone.utc) + timedelta(days=2, hours=23)
         expiration_datetime_str = expiration_datetime_obj.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
