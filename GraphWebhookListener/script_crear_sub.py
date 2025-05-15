@@ -15,8 +15,8 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration for the subscription to be created by this script
-FUNCTION_APP_NAME_FOR_SUBSCRIPTION = "new-email-handler-function" # Ej: "myemailhandlerfunction"
-TARGET_USER_ID_FOR_SUBSCRIPTION = "julianusu@outlook.com" # Ej: "usuario@tudominio.com" or the Object ID of the user
+FUNCTION_APP_NAME_FOR_SUBSCRIPTION = "email-workflow" # Ej: "myemailhandlerfunction"
+TARGET_USER_ID_FOR_SUBSCRIPTION = "datascorp@datascorp.com" # Ej: "usuario@tudominio.com" or the Object ID of the user
 
 # The following environment variables should be set in your .env file for get_graph_token to work:
 # TENANT_ID, CLIENT_ID, CLIENT_SECRET
